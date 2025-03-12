@@ -1,0 +1,46 @@
+name: Close Parent Issue When All Tasks Done
+
+on:
+  issues:
+    types: [closed]  # Issue が Closed になったときに実行
+
+jobs:
+  close-parent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if parent issue should be closed
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const issue_number = context.payload.issue.number;
+            const repo = context.repo;
+            const octokit = github.rest;
+            
+            // Get parent issue
+            const parentIssue = await octokit.issues.get({
+              ...repo,
+              issue_number: issue_number
+            });
+
+            const body = parentIssue.data.body;
+            const matches = body.match(/- \[ \] #(\d+)/g) || [];
+
+            // Check if all tasks are closed
+            let allClosed = true;
+            for (const match of matches) {
+              const childNumber = parseInt(match.match(/#(\d+)/)[1], 10);
+              const childIssue = await octokit.issues.get({ ...repo, issue_number: childNumber });
+              if (childIssue.data.state !== "closed") {
+                allClosed = false;
+                break;
+              }
+            }
+
+            // Close parent issue if all child issues are closed
+            if (allClosed) {
+              await octokit.issues.update({
+                ...repo,
+                issue_number: parentIssue.data.number,
+                state: "closed"
+              });
+            }
