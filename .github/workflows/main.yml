@@ -1,14 +1,14 @@
-name: Close Parent Issue When All Tasks Done
+name: Reopen Parent Issue When Child Issue Reopened
 
 on:
   issues:
-    types: [closed]  # Issue が Closed になったときに実行
+    types: [reopened]  # 子Issueが再オープンされたときに実行
 
 jobs:
-  close-parent:
+  reopen-parent:
     runs-on: ubuntu-latest
     steps:
-      - name: Check if parent issue should be closed
+      - name: Get Parent Issue
         uses: actions/github-script@v6
         with:
           script: |
@@ -16,31 +16,33 @@ jobs:
             const repo = context.repo;
             const octokit = github.rest;
             
-            // Get parent issue
-            const parentIssue = await octokit.issues.get({
+            // 子Issueの情報を取得
+            const childIssue = await octokit.issues.get({
               ...repo,
               issue_number: issue_number
             });
 
-            const body = parentIssue.data.body;
-            const matches = body.match(/- \[ \] #(\d+)/g) || [];
+            const body = childIssue.data.body || "";  // 🛠 修正：null の場合は空文字にする
+            const matches = body.match(/Parent Issue: #(\d+)/);
 
-            // Check if all tasks are closed
-            let allClosed = true;
-            for (const match of matches) {
-              const childNumber = parseInt(match.match(/#(\d+)/)[1], 10);
-              const childIssue = await octokit.issues.get({ ...repo, issue_number: childNumber });
-              if (childIssue.data.state !== "closed") {
-                allClosed = false;
-                break;
-              }
-            }
-
-            // Close parent issue if all child issues are closed
-            if (allClosed) {
-              await octokit.issues.update({
+            if (matches && matches.length > 1) {  // 🛠 修正：matchesがnullでないか確認
+              const parentNumber = parseInt(matches[1], 10);
+              const parentIssue = await octokit.issues.get({
                 ...repo,
-                issue_number: parentIssue.data.number,
-                state: "closed"
+                issue_number: parentNumber
               });
+
+              if (parentIssue.data.state === "closed") {
+                // 親IssueをOpenに戻す
+                await octokit.issues.update({
+                  ...repo,
+                  issue_number: parentNumber,
+                  state: "open"
+                });
+                console.log(`✅ Reopened parent issue #${parentNumber}`);
+              } else {
+                console.log(`ℹ️ Parent issue #${parentNumber} is already open.`);
+              }
+            } else {
+              console.log("⚠️ No parent issue found in child issue description.");
             }
