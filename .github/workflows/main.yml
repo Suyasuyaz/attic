@@ -24,20 +24,23 @@ jobs:
               issue_number: issue_number
             });
 
-            // 子Issueの本文が null かチェック
             if (!childIssue.data.body) {
               console.log(`⚠️ Child issue #${issue_number} has no body. Exiting.`);
               return;
             }
 
-            // 正規表現で Parent Issue を取得
+            // Parent Issue の番号を取得
+            let parentIssueNumber = null;
             const parentMatch = childIssue.data.body.match(/Parent Issue: #(\d+)/);
-            if (!parentMatch) {
+            if (parentMatch && parentMatch.length > 1) {
+              parentIssueNumber = parseInt(parentMatch[1], 10);
+            }
+
+            if (!parentIssueNumber) {
               console.log(`⚠️ No parent issue reference found in child issue #${issue_number}. Exiting.`);
               return;
             }
 
-            const parentIssueNumber = parseInt(parentMatch[1], 10);
             console.log(`🔗 Found parent issue: #${parentIssueNumber}`);
 
             // 親Issueの情報を取得
@@ -46,7 +49,6 @@ jobs:
               issue_number: parentIssueNumber
             });
 
-            // 親Issueの本文が null かチェック
             if (!parentIssue.data.body) {
               console.log(`⚠️ Parent issue #${parentIssueNumber} has no body. Exiting.`);
               return;
@@ -55,7 +57,10 @@ jobs:
             console.log("✅ Parent issue body found, checking child tasks...");
 
             // タスクリスト（子Issueのリスト）を取得
-            const matches = parentIssue.data.body.match(/- \[ \] #(\d+)/g) || [];
+            let matches = [];
+            if (parentIssue.data.body) {
+              matches = parentIssue.data.body.match(/- \[ \] #(\d+)/g) || [];
+            }
 
             if (matches.length === 0) {
               console.log("⚠️ No child tasks found in parent issue. Exiting.");
