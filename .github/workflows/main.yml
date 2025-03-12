@@ -1,97 +1,144 @@
-name: Close Parent Issue When All Tasks Done
+name: Close Parent Issue When All Child Issues Are Closed
 
 on:
   issues:
-    types: [closed]  # 子Issueが Closed になったときに実行
+    types: [closed]
+  workflow_dispatch:
 
 jobs:
-  close-parent:
+  check-and-close-parent-issues:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
     steps:
-      - name: Check if parent issue should be closed
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+          
+      - name: Close Parent Issue
         uses: actions/github-script@v6
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const issue_number = context.payload.issue.number;
-            const repo = context.repo;
-            const octokit = github.rest;
+            const issueNumber = context.payload.issue ? context.payload.issue.number : null;
             
-            console.log(`🔍 Checking for parent issue related to child issue #${issue_number}`);
-
-            // 子Issueの情報を取得
-            const childIssue = await octokit.issues.get({
-              ...repo,
-              issue_number: issue_number
-            });
-
-            if (!childIssue.data.body) {
-              console.log(`⚠️ Child issue #${issue_number} has no body. Exiting.`);
-              return;
+            // ワークフローが手動実行された場合はすべての親Issueをチェック
+            if (!issueNumber) {
+              console.log('Workflow triggered manually. Checking all possible parent issues...');
+              await checkAllParentIssues();
+            } else {
+              console.log(`Issue #${issueNumber} was closed. Checking for parent issues...`);
+              await findAndCheckParentIssues(issueNumber);
             }
-
-            // Parent Issue の番号を取得
-            let parentIssueNumber = null;
-            const parentMatch = childIssue.data.body.match(/Parent Issue: #(\d+)/);
-            if (parentMatch && parentMatch.length > 1) {
-              parentIssueNumber = parseInt(parentMatch[1], 10);
-            }
-
-            if (!parentIssueNumber) {
-              console.log(`⚠️ No parent issue reference found in child issue #${issue_number}. Exiting.`);
-              return;
-            }
-
-            console.log(`🔗 Found parent issue: #${parentIssueNumber}`);
-
-            // 親Issueの情報を取得
-            const parentIssue = await octokit.issues.get({
-              ...repo,
-              issue_number: parentIssueNumber
-            });
-
-            if (!parentIssue.data.body) {
-              console.log(`⚠️ Parent issue #${parentIssueNumber} has no body. Exiting.`);
-              return;
-            }
-
-            console.log("✅ Parent issue body found, checking child tasks...");
-
-            // タスクリスト（子Issueのリスト）を取得
-            let matches = [];
-            if (parentIssue.data.body) {
-              matches = parentIssue.data.body.match(/- \[ \] #(\d+)/g) || [];
-            }
-
-            if (matches.length === 0) {
-              console.log("⚠️ No child tasks found in parent issue. Exiting.");
-              return;
-            }
-
-            console.log(`📝 Found ${matches.length} child tasks in parent issue.`);
-
-            // すべての子IssueがClosedかチェック
-            let allClosed = true;
-            for (const match of matches) {
-              const childNumberMatch = match.match(/#(\d+)/);
-              if (!childNumberMatch) continue;
-
-              const childNumber = parseInt(childNumberMatch[1], 10);
-              const child = await octokit.issues.get({ ...repo, issue_number: childNumber });
-
-              if (child.data.state !== "closed") {
-                allClosed = false;
-                console.log(`🚨 Child Issue #${childNumber} is still open.`);
-                break;
+            
+            // 閉じられたIssueの親Issueを探して処理する関数
+            async function findAndCheckParentIssues(childIssueNumber) {
+              // GitHub Issueの本文やコメントから親Issueへの参照を検索
+              const childIssue = await github.rest.issues.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: childIssueNumber
+              });
+              
+              // 親Issueへの参照を検索（"parent of #xx" 形式や "closes #xx" 形式など）
+              const bodyText = childIssue.data.body || '';
+              const parentMatches = bodyText.match(/(?:part of|parent:|related to) #(\d+)/gi);
+              
+              if (parentMatches) {
+                for (const match of parentMatches) {
+                  const parentIssueNumber = parseInt(match.match(/#(\d+)/)[1]);
+                  console.log(`Found potential parent issue #${parentIssueNumber}`);
+                  await checkIfAllChildrenClosed(parentIssueNumber);
+                }
               }
             }
-
-            if (allClosed) {
-              console.log(`🔒 Closing parent issue #${parentIssueNumber} as all child issues are closed.`);
-              await octokit.issues.update({
-                ...repo,
-                issue_number: parentIssueNumber,
-                state: "closed"
+            
+            // すべての親Issueをチェックする関数（手動実行用）
+            async function checkAllParentIssues() {
+              // オープンしている全Issueを取得
+              const { data: openIssues } = await github.rest.issues.listForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                per_page: 100
               });
-            } else {
-              console.log(`ℹ️ Parent issue #${parentIssueNumber} remains open as some child issues are still open.`);
+              
+              for (const issue of openIssues) {
+                // Issueの本文に子Issueへの参照があるかチェック
+                const bodyText = issue.body || '';
+                if (bodyText.match(/(?:child of|children:|sub-task:|sub task:)/i)) {
+                  console.log(`Checking parent issue #${issue.number}`);
+                  await checkIfAllChildrenClosed(issue.number);
+                }
+              }
+            }
+            
+            // 親Issueのすべての子Issueがクローズされているかチェックする関数
+            async function checkIfAllChildrenClosed(parentIssueNumber) {
+              // 親Issueの情報を取得
+              const parentIssue = await github.rest.issues.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: parentIssueNumber
+              });
+              
+              if (parentIssue.data.state === 'closed') {
+                console.log(`Parent issue #${parentIssueNumber} is already closed.`);
+                return;
+              }
+              
+              // 親Issueの本文から子Issueへの参照を検索
+              const bodyText = parentIssue.data.body || '';
+              const childMatches = bodyText.match(/(?:child|sub-task|subtask|todo).*?#(\d+)/gi);
+              
+              if (!childMatches || childMatches.length === 0) {
+                console.log(`No child issues found for #${parentIssueNumber}`);
+                return;
+              }
+              
+              // 各子Issueのステータスをチェック
+              let allClosed = true;
+              for (const match of childMatches) {
+                const childIssueNumber = parseInt(match.match(/#(\d+)/)[1]);
+                
+                // 子Issueの情報を取得
+                const childIssue = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: childIssueNumber
+                });
+                
+                if (childIssue.data.state === 'open') {
+                  console.log(`Child issue #${childIssueNumber} is still open.`);
+                  allClosed = false;
+                  break;
+                } else {
+                  console.log(`Child issue #${childIssueNumber} is closed.`);
+                }
+              }
+              
+              // すべての子Issueがクローズされていれば親Issueもクローズ
+              if (allClosed) {
+                console.log(`All child issues for #${parentIssueNumber} are closed. Closing parent issue.`);
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: parentIssueNumber,
+                  state: 'closed'
+                });
+                
+                // 親Issueにコメントを追加
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: parentIssueNumber,
+                  body: '🎉 すべての子Issueが完了したため、このIssueを自動的にクローズしました。'
+                });
+              } else {
+                console.log(`Not all child issues for #${parentIssueNumber} are closed yet.`);
+              }
             }
