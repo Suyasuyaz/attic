@@ -24,25 +24,31 @@ jobs:
               issue_number: issue_number
             });
 
-            const parentIssueNumber = childIssue.data.body
-              ? (childIssue.data.body.match(/Parent Issue: #(\d+)/) || [])[1]
-              : null;
-
-            if (!parentIssueNumber) {
-              console.log("⚠️ No parent issue found. Exiting.");
+            // 子Issueの本文が null かチェック
+            if (!childIssue.data.body) {
+              console.log(`⚠️ Child issue #${issue_number} has no body. Exiting.`);
               return;
             }
 
+            // 正規表現で Parent Issue を取得
+            const parentMatch = childIssue.data.body.match(/Parent Issue: #(\d+)/);
+            if (!parentMatch) {
+              console.log(`⚠️ No parent issue reference found in child issue #${issue_number}. Exiting.`);
+              return;
+            }
+
+            const parentIssueNumber = parseInt(parentMatch[1], 10);
             console.log(`🔗 Found parent issue: #${parentIssueNumber}`);
 
             // 親Issueの情報を取得
             const parentIssue = await octokit.issues.get({
               ...repo,
-              issue_number: parseInt(parentIssueNumber, 10)
+              issue_number: parentIssueNumber
             });
 
+            // 親Issueの本文が null かチェック
             if (!parentIssue.data.body) {
-              console.log("⚠️ Parent issue has no body. Exiting.");
+              console.log(`⚠️ Parent issue #${parentIssueNumber} has no body. Exiting.`);
               return;
             }
 
@@ -61,8 +67,12 @@ jobs:
             // すべての子IssueがClosedかチェック
             let allClosed = true;
             for (const match of matches) {
-              const childNumber = parseInt(match.match(/#(\d+)/)[1], 10);
+              const childNumberMatch = match.match(/#(\d+)/);
+              if (!childNumberMatch) continue;
+
+              const childNumber = parseInt(childNumberMatch[1], 10);
               const child = await octokit.issues.get({ ...repo, issue_number: childNumber });
+
               if (child.data.state !== "closed") {
                 allClosed = false;
                 console.log(`🚨 Child Issue #${childNumber} is still open.`);
@@ -74,7 +84,7 @@ jobs:
               console.log(`🔒 Closing parent issue #${parentIssueNumber} as all child issues are closed.`);
               await octokit.issues.update({
                 ...repo,
-                issue_number: parseInt(parentIssueNumber, 10),
+                issue_number: parentIssueNumber,
                 state: "closed"
               });
             } else {
